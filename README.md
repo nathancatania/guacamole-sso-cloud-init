@@ -1,12 +1,12 @@
-# Automated Guacamole (with SAMl & SSL) Deployment using Cloud-Init
+# Automated Guacamole (with SAML & SSL) Deployment using Cloud-Init
 **Version: 0.1.0**
 
-For full instructions, [please see my blog post](https://nathancatania.com/). This has been tested with both Azure AD and Okta.
+For full instructions, [please see my blog post](https://nathancatania.com/posts/deploy-guacamole-ssl-saml/). This has been tested with both Azure AD and Okta.
 
 ## What is this?
 This is a User-Data configuration file for Cloud-Init that will automatically deploy and configure an instance of Apache Guacamole (fully integrated with SSL and SAML for authentication) in AWS, Azure or GCP; eliminating the need for any manual configuration from the command-line.
 
-This means that all you need to do is deploy a standard Ubuntu VM in any of these providers, and as long as this configuration is pasted into the VM config during creation, within 10 minutes, user's will be able to SSO to a fresh and secure instance of Guacamole.
+This means that all you need to do is deploy a standard Ubuntu VM in any of these providers, and as long as this configuration is pasted into the VM config during creation, within 10 minutes, you will be able to SSO to a secure instance of Guacamole.
 
 ## What is Cloud-Init?
 [Cloud-Init](https://cloudinit.readthedocs.io/en/latest/index.html) is a piece of software included out of the box in most common Linux Distros (eg: Ubuntu, RHEL), and is used to automatically provision initialize required configuration on first boot/deployment of a VM.
@@ -39,7 +39,7 @@ When added to a new VM instance, cloud-init can take time to fully run (~10 minu
 3. Create an Ubuntu VM within your IaaS environment. This was validated on Ubuntu Server 20.04 LTS.
 4. During the VM creation workflow, paste in the configuration text into a field marked as cloud-init/custom-data/user-data. This is different for every platform (see specific instructions below).
 5. Wait a few minutes. After some time, SSH to the VM (unless changed in the config, the default user is `guacamole`). You should now see the Gucamole containers running. Hint: Run `docker ps` to check.
-6. Navigate to the Guacamole UI, `https://<your-specified-fqdn>/guacamole, and you should be redirected to SSO.
+6. Navigate to the Guacamole UI, `https://[your-specified-fqdn]/guacamole, and you should be redirected to SSO.
 
 Congratulations, you now have a working Guacamole instance, secured with SSL and integrated with SAML!
 
