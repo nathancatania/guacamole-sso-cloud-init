@@ -1,0 +1,265 @@
+## template: jinja
+#cloud-config
+
+# {# v0.1.0 #}
+
+# {# ####### START SETTINGS ####### #}
+
+# {# REQUIRED - Provide the FQDN that Guacamole will be accessed at! #}
+# {# Leaving this as the default value will generate SSL certs for guac.company.local which you don't want! #}
+{% set fqdn = "guac.company.local" %}
+
+# {# REQUIRED - IdP (Azure AD / Okta) Metadata URL #}
+# {# Leaving this as the default value cause the SSO module to fail! #}
+{% set metadata_url = "https://example.com/metadata.xml" %}
+
+# {# RECOMMENDED - Change the default Guacamole DB password #}
+# {# The Guacamole DB is used to store settings/config data #}
+{% set dbpass = "Y0u%$h0UlD%R3@Lly%CH@ng3%tH1$%P@$sW0rD" %}
+
+# {# OPTIONAL - Import an SSH key from a public keyserver (GitHub). Enter your GitHub username, eg: "nathancatania" #}
+# {# Leave default if not needed #}
+{% set gh_identity = "username" %}
+
+# {# OPTIONAL - Add an authorized public SSH key to permit access to the Publisher host via npa username #}
+# {# Leave default if not needed #}
+{% set ssh_key = "ssh-rsa AAAABBBBCCCC..." %}
+
+# {# OPTIONAL - Set the default user/username for the system. This will be who you first SSH to the VM as #}
+# {# Default: guacamole@vm-hostname #}
+{% set default_user = "guacamole" %}
+
+# {# OPTIONAL - Guacamole SAML extension download target #}
+# {# Default: Version 1.4.0 #}
+{% set saml_ext_url = "https://dlcdn.apache.org/guacamole/1.4.0/binary/guacamole-auth-sso-1.4.0.tar.gz" %}
+
+# {# OPTIONAL - Container tags to pull #}
+# {# Tested on current tags. Change to "latest" to grab most recent containers #}
+{% set mariadb_tag = "latest" %}
+{% set guac_tag = "1.4.0" %}
+{% set guacd_tag = "1.4.0" %}
+{% set caddy_tag = "2.5.2" %}
+
+# {# ####### END SETTINGS ####### #}
+
+# WARNING: Ensure login.microsoftonline.com (Azure AD) or *.okta.com (Okta) is bypassed from SSL inspection!
+
+# Update software packages
+package_update: true
+package_upgrade: true
+
+# Install the following packages
+packages:
+  - wget
+  - apt-transport-https
+  - ca-certificates
+  - curl
+  - gnupg
+  - lsb-release
+  - software-properties-common
+  - net-tools
+
+# create the docker group
+groups:
+  - docker
+
+# Add default auto created user to docker group
+system_info:
+  default_user:
+    name: {{ default_user }}
+    groups: [docker]
+{% if (gh_identity != "username") or (not gh_identity) %}
+    ssh_import_id:
+      - gh:{{ gh_identity }}
+{% endif %}
+{% if (ssh_key != "ssh-rsa AAAABBBBCCCC...") or (not ssh_key) %}
+    ssh_authorized_keys:
+      - {{ ssh_key }}
+{% endif %}
+
+
+# Write configuration files for Docker, Guac, and Caddy
+write_files:
+  - path: /home/{{ default_user }}/docker-compose.yml
+    content: |
+      version: '3.9'
+      networks:
+        web:
+        internal:
+      services:
+        guacdb:
+          env_file: .env
+          container_name: guacdb
+          image: 'mariadb/server:{{ mariadb_tag }}'
+          restart: unless-stopped
+          environment:
+            MYSQL_ROOT_PASSWORD: '${ROOTDBPASS}'
+            MYSQL_DATABASE: '${DB}'
+            MYSQL_USER: '${DBUSER}'
+            MYSQL_PASSWORD: '${DBPASS}'
+          volumes:
+            - '${BASEDIR}/guacdb:/docker-entrypoint-initdb.d:ro'
+            - '${BASEDIR}/guacdb:/var/lib/mysql'
+          networks:
+            - internal
+        guacd:
+          env_file: .env
+          container_name: guacd
+          image: guacamole/guacd:{{ guacd_tag }}
+          restart: unless-stopped
+          networks:
+            - internal
+        guacamole:
+          env_file: .env
+          container_name: guacamole
+          image: 'guacamole/guacamole:{{ guac_tag }}'
+          restart: unless-stopped
+          volumes:
+            - '${BASEDIR}/guac:/etc/guacamole'
+            - '${BASEDIR}/guac/server.xml:/usr/local/tomcat/conf/server.xml'
+          ports:
+            - '8080'
+          environment:
+            GUACD_HOSTNAME: "guacd"
+            EXTENSION_PRIORITY: "saml"
+            SKIP_IF_UNAVAILABLE: "saml"
+            GUACAMOLE_HOME: '/etc/guacamole'
+            MYSQL_HOSTNAME: "guacdb"
+            MYSQL_DATABASE: "${DB}"
+            MYSQL_USER: "${DBUSER}"
+            MYSQL_PASSWORD: "${DBPASS}"
+          depends_on:
+            - guacdb
+            - guacd
+          networks:
+            - internal
+        caddy:
+          env_file: .env
+          container_name: caddy
+          image: 'caddy:{{ caddy_tag }}'
+          restart: unless-stopped
+          ports:
+            - "80:80"
+            - "443:443"
+          volumes:
+            - '${BASEDIR}/caddy/Caddyfile:/etc/caddy/Caddyfile'
+            - '${BASEDIR}/caddy/data:/data'
+            - '${BASEDIR}/caddy/config:/config'
+          networks:
+            - web
+            - internal
+  - path: /home/{{ default_user }}/.env
+    content: |
+      BASEDIR=/home/{{ default_user }}/configs
+
+      # Database
+      ROOTDBPASS={{ dbpass }}$s
+      DBPASS={{ dbpass }}
+      DB=guacdb
+      DBUSER=guacdbuser
+  - path: /home/{{ default_user }}/configs/caddy/Caddyfile
+    content: |
+      {{ fqdn }} {
+          reverse_proxy guacamole:8080 {
+              trusted_proxies private_ranges
+              flush_interval -1
+          }
+          tls internal
+      }
+      www.{{ fqdn }} {
+          redir https://{{ fqdn }}{uri}
+          tls internal
+      }
+  - path: /home/{{ default_user }}/configs/guac/guacamole.properties
+    content: |
+      # SAML Metadata URL from IdP (Azure AD, Okta, etc)
+      saml-idp-metadata-url: {{ metadata_url }}
+      saml-entity-id: https://{{ fqdn }}
+      saml-callback-url: https://{{ fqdn }}/guacamole/
+      saml-debug: false
+      extension-priority: saml
+      saml-group-attribute: groups
+      skip-if-unavailable: saml
+      saml-strict: false
+  - path: /home/{{ default_user }}/configs/guac/server.xml
+    content: |
+      <?xml version="1.0" encoding="UTF-8"?>
+      <!--
+        Licensed to the Apache Software Foundation (ASF) under one or more
+        contributor license agreements.  See the NOTICE file distributed with
+        this work for additional information regarding copyright ownership.
+        The ASF licenses this file to You under the Apache License, Version 2.0
+        (the "License"); you may not use this file except in compliance with
+        the License.  You may obtain a copy of the License at
+
+            http://www.apache.org/licenses/LICENSE-2.0
+
+        Unless required by applicable law or agreed to in writing, software
+        distributed under the License is distributed on an "AS IS" BASIS,
+        WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+        See the License for the specific language governing permissions and
+        limitations under the License.
+      -->
+      <Server port="8005" shutdown="SHUTDOWN">
+        <Listener className="org.apache.catalina.startup.VersionLoggerListener" />
+        <!-- APR library loader. Documentation at /docs/apr.html -->
+        <Listener className="org.apache.catalina.core.AprLifecycleListener" SSLEngine="on" />
+        <!-- Prevent memory leaks due to use of particular java/javax APIs-->
+        <Listener className="org.apache.catalina.core.JreMemoryLeakPreventionListener" />
+        <Listener className="org.apache.catalina.mbeans.GlobalResourcesLifecycleListener" />
+        <Listener className="org.apache.catalina.core.ThreadLocalLeakPreventionListener" />
+
+        <GlobalNamingResources>
+          <Resource name="UserDatabase" auth="Container"
+                    type="org.apache.catalina.UserDatabase"
+                    description="User database that can be updated and saved"
+                    factory="org.apache.catalina.users.MemoryUserDatabaseFactory"
+                    pathname="conf/tomcat-users.xml" />
+        </GlobalNamingResources>
+
+        <Service name="Catalina">
+
+          <Connector port="8080" protocol="HTTP/1.1"
+                    connectionTimeout="20000"
+                    URIEncoding="UTF-8"
+                    redirectPort="8443" />
+
+          <Engine name="Catalina" defaultHost="localhost">
+
+            <Realm className="org.apache.catalina.realm.LockOutRealm">
+
+              <Realm className="org.apache.catalina.realm.UserDatabaseRealm"
+                    resourceName="UserDatabase"/>
+            </Realm>
+
+            <Host name="localhost"  appBase="webapps"
+                  unpackWARs="true" autoDeploy="true">
+
+              <Valve className="org.apache.catalina.valves.AccessLogValve" directory="logs"
+                    prefix="localhost_access_log" suffix=".txt"
+                    pattern="%h %l %u %t &quot;%r&quot; %s %b" />
+
+              <Valve className="org.apache.catalina.valves.RemoteIpValve"
+                      remoteIpHeader="x-forwarded-for"
+                      remoteIpProxiesHeader="x-forwarded-by"
+                      protocolHeader="x-forwarded-proto" />
+
+            </Host>
+          </Engine>
+        </Service>
+      </Server>
+
+
+# Configure and deploy Guacamole
+runcmd:
+ - 'mkdir -p /home/{{ default_user }}/configs/guacdb && mkdir -p /home/{{ default_user }}/configs/caddy && mkdir -p /home/{{ default_user }}/configs/guac/extensions'
+ - 'curl -fsSL https://get.docker.com -o get-docker.sh'
+ - 'sh get-docker.sh'
+ - 'systemctl start docker'
+ - 'systemctl enable docker'
+ - 'wget {{ saml_ext_url }} -P /home/{{ default_user }}'
+ - 'tar -xvf /home/{{ default_user }}/guacamole-auth-sso-1.4.0.tar.gz -C /home/{{ default_user }}'
+ - 'cp /home/{{ default_user }}/guacamole-auth-sso-1.4.0/saml/guacamole-auth-sso-saml-1.4.0.jar /home/{{ default_user }}/configs/guac/extensions'
+ - 'docker run --rm guacamole/guacamole:latest /opt/guacamole/bin/initdb.sh --mysql > /home/{{ default_user }}/configs/guacdb/guacdb.sql'
+ - 'chown -R {{ default_user }}:{{ default_user }} /home/{{ default_user }}/configs'
+ - 'docker compose -f /home/{{ default_user }}/docker-compose.yml up -d'
