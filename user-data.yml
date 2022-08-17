@@ -160,6 +160,7 @@ write_files:
   - path: /home/{{ default_user }}/configs/caddy/Caddyfile
     content: |
       {{ fqdn }} {
+          redir / /guacamole/ 308
           reverse_proxy guacamole:8080 {
               trusted_proxies private_ranges
               flush_interval -1
